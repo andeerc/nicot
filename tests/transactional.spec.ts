@@ -86,6 +86,17 @@ class TxUserController extends dec.baseController() {
 
     throw new BlankReturnMessageDto(404, 'message').toException();
   }
+
+  @Post('wrong-repo-fail')
+  async wrongRepoThen404(): Promise<never> {
+    await this.ds.getRepository(User).save({
+      name: 'OUTSIDE',
+      age: 24,
+      gender: Gender.F,
+    } as any);
+
+    throw new BlankReturnMessageDto(404, 'message').toException();
+  }
 }
 
 describe('transactional-typeorm', () => {
@@ -170,5 +181,16 @@ describe('transactional-typeorm', () => {
     // 最终还是要 rollback，数据库里不应留下
     const rows = await repo.find({ where: { name: 'TXVIS' } });
     expect(rows).toHaveLength(0);
+  });
+
+  it('should show that a plain repository obtained from DataSource does not join the request transaction', async () => {
+    const server = app.getHttpServer();
+    const ds = app.get(DataSource);
+    const repo = ds.getRepository(User);
+
+    await request(server).post('/tx-user/wrong-repo-fail').send({}).expect(404);
+
+    const rows = await repo.find({ where: { name: 'OUTSIDE' } });
+    expect(rows).toHaveLength(1);
   });
 });

@@ -108,11 +108,20 @@ export class CrudBase<T extends ValidCrudEntity<T>> {
   // cleaning entities
 
   _cleanEntityNotInResultFields(ent: T): T {
-    const visited = new Set();
+    const visited = new Map<any, any>();
     const runSingleObject = (o: any, cl) => {
-      if (visited.has(o)) {
+      if (o == null || typeof o !== 'object') {
         return o;
       }
+      if (visited.has(o)) {
+        return visited.get(o);
+      }
+
+      const clone = Array.isArray(o)
+        ? []
+        : Object.create(Object.getPrototypeOf(o));
+      visited.set(o, clone);
+
       const fields = getNotInResultFields(
         cl,
         this.crudOptions.keepEntityVersioningDates,
@@ -120,26 +129,41 @@ export class CrudBase<T extends ValidCrudEntity<T>> {
       if (cl === this.entityClass && this.crudOptions.outputFieldsToOmit) {
         fields.push(...(this.crudOptions.outputFieldsToOmit as string[]));
       }
-      for (const field of fields) {
-        delete o[field];
-      }
-      visited.add(o);
-      for (const relation of getTypeormRelations(cl)) {
-        const propertyName = relation.propertyName as string;
-        if (o[propertyName]) {
-          if (Array.isArray(o[propertyName])) {
-            o[propertyName] = o[propertyName].map((r) =>
-              runSingleObject(r, relation.propertyClass),
-            );
-          } else {
-            o[propertyName] = runSingleObject(
-              o[propertyName],
-              relation.propertyClass,
-            );
+
+      const relationMap = new Map(
+        getTypeormRelations(cl).map((relation) => [
+          relation.propertyName as string,
+          relation,
+        ]),
+      );
+      const hiddenFields = new Set(fields);
+
+      for (const key of Reflect.ownKeys(o)) {
+        if (hiddenFields.has(key as string)) {
+          continue;
+        }
+
+        const descriptor = Object.getOwnPropertyDescriptor(o, key);
+        if (!descriptor) {
+          continue;
+        }
+
+        if ('value' in descriptor && descriptor.value != null) {
+          const relation =
+            typeof key === 'string' ? relationMap.get(key) : undefined;
+          if (relation) {
+            descriptor.value = Array.isArray(descriptor.value)
+              ? descriptor.value.map((value) =>
+                  runSingleObject(value, relation.propertyClass),
+                )
+              : runSingleObject(descriptor.value, relation.propertyClass);
           }
         }
+
+        Object.defineProperty(clone, key, descriptor);
       }
-      return o;
+
+      return clone;
     };
 
     return runSingleObject(ent, this.entityClass);
@@ -935,10 +959,6 @@ export class CrudBase<T extends ValidCrudEntity<T>> {
         `${this.entityName} ID ${id} not found.`,
       ).toException();
     };
-
-    if (!(await this.repo.exists({ where }))) {
-      throw404();
-    }
 
     // -------- utils (keep simple) --------
 

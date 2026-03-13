@@ -1139,6 +1139,27 @@ And let `RestfulFactory` call this for you via `factory.crudService()`.
 
 ---
 
+## Performance Notes
+
+NICOT intentionally optimizes for **entity-driven ergonomics** over being the thinnest possible SQL layer.
+
+That means some features are more expensive than plain repository calls:
+
+- `cleanEntityNotInResultFields()` traverses loaded relation graphs to remove `@NotInResult()` fields from the response.
+- `findAll()` uses `getManyAndCount()`, so relation-heavy list endpoints still pay the cost of a data query plus count query.
+- cursor pagination uses `getRawAndEntities()`, which is more expensive than a simple `getMany()` when joins are large.
+- `upsert()` performs a follow-up read to return the saved entity, and soft-delete restore flows may require one more round trip.
+- Postgres full-text helper indexes are initialized from `onModuleInit()`, so startup can be slower on modules that enable `@QueryFullText()`.
+
+Recommended practice:
+
+- keep `relations` minimal on hot list endpoints
+- avoid request-wide transactions for read-mostly controllers
+- prefer `upsertIncludeRelations: false` unless the caller really needs joined data back
+- move large full-text/index setup to migrations when startup time matters more than convenience
+
+---
+
 ## RestfulFactory: DTO & Controller generator
 
 `RestfulFactory<T>` is the heart of “entity → DTOs → controller decorators” mapping.
@@ -1504,6 +1525,14 @@ export class UserService extends UserFactory.crudService() {
 
 Now all NICOT CRUD operations (`create/findAll/update/delete/import`) will run using the transaction-bound repository when the interceptor is active.
 
+What does **not** join the request transaction automatically:
+
+- `@InjectRepository(User)` from `@nestjs/typeorm`
+- `@InjectDataSource()` followed by `dataSource.getRepository(User)`
+- any repository/entity manager captured before the interceptor opens the request transaction
+
+If you write through those objects, the SQL runs outside NICOT’s request-scoped transaction and will not roll back together with the request.
+
 #### Transactional entity manager (advanced)
 
 ```ts
@@ -1540,6 +1569,18 @@ Expected:
 
 - HTTP response is `404`
 - database changes are not committed (rollback)
+
+### Fastify / hybrid Nest apps
+
+The transactional interceptor works with both Express and Fastify because it binds the transaction to the Nest request lifecycle, not to an Express-specific API.
+
+For Fastify applications, the setup is still:
+
+1. import `TransactionalTypeOrmModule.forFeature(...)`
+2. apply `@UseInterceptors(TransactionalTypeOrmInterceptor())` on the controller or selected write endpoints
+3. inject `@InjectTransactionalRepository(...)` or `@InjectTransactionalEntityManager()` in the services that perform writes
+
+This is the recommended setup when NICOT is used inside a Fastify-based Nest app.
 
 ---
 

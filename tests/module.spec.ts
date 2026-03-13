@@ -851,6 +851,36 @@ describe('app', () => {
     expect(getBook.data.tag).toBeUndefined();
   });
 
+  it('should sanitize NotInResult fields without mutating loaded entities', async () => {
+    const userService = app.get(UserService);
+    expect(userService).toBeDefined();
+
+    const user = await userService.repo.save({
+      name: 'Mika',
+      age: 23,
+      gender: Gender.F,
+    } as any);
+    await userService.repo.manager.save(Book, {
+      name: 'hidden-book',
+      tag: 'secret-tag',
+      userId: user.id,
+    });
+
+    const loadedUser = await userService.repo.findOne({
+      where: { id: user.id },
+      relations: ['books'],
+    });
+
+    expect(loadedUser.books[0].tag).toBe('secret-tag');
+
+    const cleanedUser = userService.cleanEntityNotInResultFields(loadedUser);
+
+    expect(cleanedUser).not.toBe(loadedUser);
+    expect(cleanedUser.books[0]).toBeInstanceOf(Book);
+    expect(cleanedUser.books[0].tag).toBeUndefined();
+    expect(loadedUser.books[0].tag).toBe('secret-tag');
+  });
+
   it('should work with relations', async () => {
     const bookService = app.get(BookService);
     expect(bookService).toBeDefined();
