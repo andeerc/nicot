@@ -8,6 +8,7 @@ import {
   DeleteResult,
   EntityManager,
   FindOneOptions,
+  FindOptionsSelect,
   FindOptionsWhere,
   In,
   Repository,
@@ -45,6 +46,9 @@ import { BindingValueMetadata, DefaultBindingKey } from './decorators';
 
 export type EntityId<T extends { id: any }> = T['id'];
 type BindingSnapshot = Record<string, any>;
+
+const existingEntitySelect = <T extends ValidCrudEntity<T>>() =>
+  ({ id: true, deleteTime: true } as unknown as FindOptionsSelect<T>);
 
 export const Relation = (
   name: string,
@@ -332,7 +336,7 @@ export class CrudBase<T extends ValidCrudEntity<T>> {
                 },
                 select: this.crudOptions.createOrUpdate
                   ? undefined
-                  : ['id', 'deleteTime'],
+                  : existingEntitySelect<T>(),
                 withDeleted: true,
               }),
             ),
@@ -444,7 +448,7 @@ export class CrudBase<T extends ValidCrudEntity<T>> {
           where: { id: ent.id },
           select: this.crudOptions.createOrUpdate
             ? undefined
-            : ['id', 'deleteTime'],
+            : existingEntitySelect<T>(),
           withDeleted: true,
           lock: {
             mode: 'pessimistic_write',

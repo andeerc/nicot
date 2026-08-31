@@ -6,6 +6,10 @@ import { unshiftOrderBy } from '../utility/unshift-order-by';
 import { addSubject } from '../utility/subject-registry';
 import { parseBool } from 'nesties';
 import { Brackets, SelectQueryBuilder } from 'typeorm';
+import {
+  Base64BinaryStorage,
+  base64OrBinaryToDatabaseValue,
+} from '../utility/base64-binary';
 
 export const QueryCondition = (cond: QueryCond) =>
   Metadata.set(
@@ -168,6 +172,47 @@ export const createQueryOperatorArrayify = (
 
 export const QueryIn = createQueryOperatorArrayify('IN', '=');
 export const QueryNotIn = createQueryOperatorArrayify('NOT IN', '!=');
+
+export interface QueryBase64Options {
+  field?: string;
+  binaryStorage?: Base64BinaryStorage;
+}
+
+const normalizeQueryBase64Options = (
+  fieldOrOptions?: string | QueryBase64Options,
+): QueryBase64Options =>
+  typeof fieldOrOptions === 'string'
+    ? { field: fieldOrOptions }
+    : fieldOrOptions ?? {};
+
+const toBase64QueryValue = (
+  value: unknown,
+  storage: Base64BinaryStorage = 'postgres-bytea',
+): Buffer | string | unknown => {
+  if (value == null) {
+    return value;
+  }
+  return base64OrBinaryToDatabaseValue(value as string | Buffer, storage);
+};
+
+/**
+ * Builds a query condition for a `Base64BinaryColumn`. The incoming base64
+ * string (the API-facing form) is decoded into a PostgreSQL-safe bytea hex
+ * parameter right before it is bound, so it can be compared against the raw
+ * binary stored in the database. A value that is already binary (Buffer /
+ * Uint8Array / ArrayBuffer) is used as that binary payload.
+ */
+export const createQueryBase64Operator =
+  (operator: string) => (fieldOrOptions?: string | QueryBase64Options) => {
+    const options = normalizeQueryBase64Options(fieldOrOptions);
+    return QueryWrap((entityExpr, varExpr, info) => {
+      info.mutateValue(toBase64QueryValue(info.value, options.binaryStorage));
+      return `${entityExpr} ${operator} ${varExpr}`;
+    }, options.field);
+  };
+
+export const QueryBase64Equal = createQueryBase64Operator('=');
+export const QueryBase64NotEqual = createQueryBase64Operator('!=');
 
 export const QueryFullText = (options: QueryFullTextColumnOptions = {}) => {
   const configurationName = options.parser

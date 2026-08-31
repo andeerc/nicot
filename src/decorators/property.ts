@@ -2,8 +2,11 @@ import { ColumnCommonOptions } from 'typeorm/decorator/options/ColumnCommonOptio
 import { ApiProperty, ApiPropertyOptions } from '@nestjs/swagger';
 import { ColumnWithLengthOptions } from 'typeorm/decorator/options/ColumnWithLengthOptions';
 import { AnyClass, MergePropertyDecorators } from 'nesties';
-import { Column, Index } from 'typeorm';
+import { Column, ColumnOptions, Index } from 'typeorm';
 import {
+  buildMessage,
+  IsArray,
+  IsBoolean,
   IsDate,
   IsEnum,
   IsInt,
@@ -14,7 +17,10 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateBy,
+  ValidationOptions,
   ValidateNested,
+  isBase64,
 } from 'class-validator';
 import {
   SimpleColumnType,
@@ -40,6 +46,11 @@ import {
 import { parseBool } from 'nesties';
 import { ColumnUnsignedOptions } from 'typeorm/decorator/options/ColumnUnsignedOptions';
 import { GetMutatorBool, RequireGetMutator } from './get-mutator';
+import {
+  Base64BinaryStorage,
+  Base64BinaryTransformer,
+  isBinaryLike,
+} from '../utility/base64-binary';
 
 export interface OpenAPIOptions<T> {
   description?: string;
@@ -239,11 +250,12 @@ export const FloatColumn = (
     }
   }
   return MergePropertyDecorators([
-    Column(type, {
+    Column({
+      type,
       default: options.default,
       unsigned: options.unsigned,
       ...columnDecoratorOptions(options),
-    }),
+    } as ColumnOptions),
     IsNumber(),
     ...(min > Number.MIN_SAFE_INTEGER ? [Min(min)] : []),
     ...(max < Number.MAX_SAFE_INTEGER ? [Max(max)] : []),
@@ -324,6 +336,27 @@ export const BoolColumn = (
     GetMutatorBool(),
   ]);
 
+const jsonColumnValidators = (definition: ClassOrArray): PropertyDecorator[] => {
+  const isArray = Array.isArray(definition);
+  const cl = getClassFromClassOrArray(definition);
+  const validationOptions: ValidationOptions = isArray ? { each: true } : {};
+  const decorators: PropertyDecorator[] = isArray ? [IsArray()] : [];
+
+  if (cl === String) {
+    decorators.push(IsString(validationOptions));
+  } else if (cl === Number) {
+    decorators.push(IsNumber({}, validationOptions));
+  } else if (cl === Boolean) {
+    decorators.push(IsBoolean(validationOptions));
+  } else if (cl === Date) {
+    decorators.push(IsDate(validationOptions));
+  } else {
+    decorators.push(ValidateNested(validationOptions));
+  }
+
+  return decorators;
+};
+
 const createJsonColumnDef =
   (
     columnType: SimpleColumnType = 'jsonb',
@@ -339,7 +372,7 @@ const createJsonColumnDef =
     return MergePropertyDecorators([
       RequireGetMutator(),
       Type(() => cl),
-      ValidateNested(),
+      ...jsonColumnValidators(definition),
       Column(options.columnType || columnType, {
         ...columnDecoratorOptions(options),
         transformer: new typeTransformerClass(definition),
@@ -355,6 +388,52 @@ export const StringJsonColumn = createJsonColumnDef(
   'text',
   TypeTransformerString,
 );
+
+/**
+ * Accepts either a valid base64 `string` or a raw binary payload
+ * (`Buffer` / `Uint8Array` / `ArrayBuffer`). The binary case represents the
+ * actual binary data being assigned directly instead of its base64 form.
+ */
+export const IsBase64OrBinary = (
+  validationOptions?: ValidationOptions,
+): PropertyDecorator =>
+  ValidateBy(
+    {
+      name: 'isBase64OrBinary',
+      validator: {
+        validate: (value) =>
+          isBinaryLike(value) || (typeof value === 'string' && isBase64(value)),
+        defaultMessage: buildMessage(
+          (eachPrefix) =>
+            `${eachPrefix}$property must be a base64 string or binary data (Buffer / Uint8Array / ArrayBuffer)`,
+          validationOptions,
+        ),
+      },
+    },
+    validationOptions,
+  );
+
+export const Base64BinaryColumn = (
+  options: PropertyOptions<string> & {
+    columnType?: SimpleColumnType | WithLengthColumnType;
+    binaryStorage?: Base64BinaryStorage;
+  } = {},
+): PropertyDecorator =>
+  MergePropertyDecorators([
+    Column((options.columnType || 'bytea') as SimpleColumnType, {
+      ...columnDecoratorOptions(options),
+      default: undefined,
+      transformer: new Base64BinaryTransformer(
+        options.binaryStorage ??
+          (options.columnType && options.columnType !== 'bytea'
+            ? 'binary'
+            : 'postgres-bytea'),
+      ),
+    }),
+    IsBase64OrBinary(),
+    validatorDecorator(options),
+    swaggerDecorator(options, { type: String, format: 'byte' }),
+  ]);
 
 export const NotColumn = (
   options: OpenAPIOptions<any> = {},
